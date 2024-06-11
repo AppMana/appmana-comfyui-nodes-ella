@@ -1,3 +1,5 @@
+Installable fork of ComfyUI ELLA nodes. This uses the built-in T5 features of upstream.
+
 # ComfyUI-ELLA
 
 <div align="center">

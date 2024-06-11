@@ -3,11 +3,12 @@ from collections import OrderedDict
 from typing import Optional
 
 import torch
-from comfy import model_management
-from comfy.model_patcher import ModelPatcher
 from safetensors.torch import load_model
 from torch import nn
 
+from comfy import model_management
+from comfy.language.transformers_model_management import TransformersManagedModel
+from comfy.model_patcher import ModelPatcher
 from .activations import get_activation
 from .utils import remove_weights
 
@@ -61,10 +62,10 @@ class PerceiverAttentionBlock(nn.Module):
         return attn_output
 
     def forward(
-        self,
-        x: torch.Tensor,
-        latents: torch.Tensor,
-        timestep_embedding: Optional[torch.Tensor] = None,
+            self,
+            x: torch.Tensor,
+            latents: torch.Tensor,
+            timestep_embedding: Optional[torch.Tensor] = None,
     ):
         normed_latents = self.ln_1(latents, timestep_embedding)
         latents = latents + self.attention(
@@ -76,19 +77,19 @@ class PerceiverAttentionBlock(nn.Module):
 
 class PerceiverResampler(nn.Module):
     def __init__(
-        self,
-        width: int = 768,
-        layers: int = 6,
-        heads: int = 8,
-        num_latents: int = 64,
-        output_dim=None,
-        input_dim=None,
-        time_embedding_dim: Optional[int] = None,
+            self,
+            width: int = 768,
+            layers: int = 6,
+            heads: int = 8,
+            num_latents: int = 64,
+            output_dim=None,
+            input_dim=None,
+            time_embedding_dim: Optional[int] = None,
     ):
         super().__init__()
         self.output_dim = output_dim
         self.input_dim = input_dim
-        self.latents = nn.Parameter(width**-0.5 * torch.randn(num_latents, width))
+        self.latents = nn.Parameter(width ** -0.5 * torch.randn(num_latents, width))
         self.time_aware_linear = nn.Linear(time_embedding_dim or width, width, bias=True)
 
         if self.input_dim is not None:
@@ -116,17 +117,15 @@ class PerceiverResampler(nn.Module):
 
 
 class T5TextEmbedder:
-    def __init__(self, pretrained_path="google/flan-t5-xl", max_length=None, dtype=None, legacy=True):
+    def __init__(self, transformers_model: TransformersManagedModel, max_length=None, dtype=None, legacy=True):
         self.load_device = model_management.text_encoder_device()
         self.offload_device = model_management.text_encoder_offload_device()
         self.dtype = dtype if dtype is not None else model_management.text_encoder_dtype(self.load_device)
         self.output_device = model_management.intermediate_device()
         self.max_length = max_length
-        from transformers import T5EncoderModel, T5Tokenizer
-
-        self.model = T5EncoderModel.from_pretrained(pretrained_path).to(self.dtype)  # type: ignore
-        self.tokenizer = T5Tokenizer.from_pretrained(pretrained_path, legacy=legacy)
-        self.patcher = ModelPatcher(self.model, load_device=self.load_device, offload_device=self.offload_device)
+        self.model = transformers_model.model
+        self.tokenizer = transformers_model.tokenizer
+        self.patcher = transformers_model
 
     def load_model(self):
         model_management.load_model_gpu(self.patcher)
@@ -155,21 +154,25 @@ class T5TextEmbedder:
             attention_mask = text_inputs.attention_mask
         text_input_ids = text_input_ids.to(self.model.device)  # type: ignore
         attention_mask = attention_mask.to(self.model.device)  # type: ignore
-        outputs = self.model(text_input_ids, attention_mask=attention_mask)  # type: ignore
+        if hasattr(self.model, "encoder"):
+            encoder = self.model.encoder
+        else:
+            encoder = self.model
+        outputs = encoder(text_input_ids, attention_mask=attention_mask)  # type: ignore
 
         return outputs.last_hidden_state.to(self.output_device)
 
 
 class TimestepEmbedding(nn.Module):
     def __init__(
-        self,
-        in_channels: int,
-        time_embed_dim: int,
-        act_fn: str = "silu",
-        out_dim: Optional[int] = None,
-        post_act_fn: Optional[str] = None,
-        cond_proj_dim=None,
-        sample_proj_bias=True,
+            self,
+            in_channels: int,
+            time_embed_dim: int,
+            act_fn: str = "silu",
+            out_dim: Optional[int] = None,
+            post_act_fn: Optional[str] = None,
+            cond_proj_dim=None,
+            sample_proj_bias=True,
     ):
         super().__init__()
         linear_cls = nn.Linear
@@ -207,12 +210,12 @@ class TimestepEmbedding(nn.Module):
 
 
 def get_timestep_embedding(
-    timesteps: torch.Tensor,
-    embedding_dim: int,
-    flip_sin_to_cos: bool = False,
-    downscale_freq_shift: float = 1,
-    scale: float = 1,
-    max_period: int = 10000,
+        timesteps: torch.Tensor,
+        embedding_dim: int,
+        flip_sin_to_cos: bool = False,
+        downscale_freq_shift: float = 1,
+        scale: float = 1,
+        max_period: int = 10000,
 ):
     """
     This matches the implementation in Denoising Diffusion Probabilistic Models: Create sinusoidal timestep embeddings.
@@ -267,16 +270,16 @@ class Timesteps(nn.Module):
 
 class ELLAModel(nn.Module):
     def __init__(
-        self,
-        time_channel=320,
-        time_embed_dim=768,
-        act_fn: str = "silu",
-        out_dim: Optional[int] = None,
-        width=768,
-        layers=6,
-        heads=8,
-        num_latents=64,
-        input_dim=2048,
+            self,
+            time_channel=320,
+            time_embed_dim=768,
+            act_fn: str = "silu",
+            out_dim: Optional[int] = None,
+            width=768,
+            layers=6,
+            heads=8,
+            num_latents=64,
+            input_dim=2048,
     ):
         super().__init__()
         self.position = Timesteps(time_channel, flip_sin_to_cos=True, downscale_freq_shift=0)

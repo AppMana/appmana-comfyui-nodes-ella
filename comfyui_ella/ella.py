@@ -1,12 +1,15 @@
 import logging
-import os
-from typing import Dict
+from typing import Dict, Optional
 
-import folder_paths
 import torch
-from comfy import model_management, samplers
-from comfy.conds import CONDCrossAttn
 
+from comfy import samplers
+from comfy.cmd.folder_paths import add_model_folder_path
+from comfy.conds import CONDCrossAttn
+from comfy.model_downloader import KNOWN_HUGGINGFACE_MODEL_REPOS, get_or_download, get_filename_list_with_downloadable, \
+    add_known_models, KNOWN_CHECKPOINTS
+from comfy.model_downloader_types import HuggingFile, CivitFile
+from comfy_extras.nodes.nodes_language import TransformersLoader
 from .model import ELLA, T5TextEmbedder
 
 ELLA_TYPE = "ELLA"
@@ -17,17 +20,18 @@ APPLY_MODE_ELLA_ONLY = "ELLA ONLY"
 APPLY_MODE_ELLA_AND_CLIP = "ELLA + CLIP"
 
 # set the models directory
-if "ella" not in folder_paths.folder_names_and_paths:
-    current_paths = [os.path.join(folder_paths.models_dir, "ella")]
-else:
-    current_paths, _ = folder_paths.folder_names_and_paths["ella"]
-folder_paths.folder_names_and_paths["ella"] = (current_paths, folder_paths.supported_pt_extensions)
+FOLDER_NAME = "ella"
+KNOWN_HUGGINGFACE_MODEL_REPOS.add("google/flan-t5-xl")
+add_model_folder_path(FOLDER_NAME)
 
-if "ella_encoder" not in folder_paths.folder_names_and_paths:
-    current_paths = [os.path.join(folder_paths.models_dir, "ella_encoder")]
-else:
-    current_paths, _ = folder_paths.folder_names_and_paths["ella_encoder"]
-folder_paths.folder_names_and_paths["ella_encoder"] = (current_paths, folder_paths.supported_pt_extensions)
+KNOWN_ELLA_CHECKPOINTS = [
+    HuggingFile("QQGYLab/ELLA", "ella-sd1.5-tsc-t5xl.safetensors")
+]
+
+add_known_models("checkpoints", KNOWN_CHECKPOINTS,
+                 # from example workflow
+                 CivitFile(84476, 156202, "awpainting_v12.safetensors")
+                 )
 
 
 def ella_encode(ella: ELLA, timesteps: torch.Tensor, embeds: dict):
@@ -49,13 +53,13 @@ def ella_encode(ella: ELLA, timesteps: torch.Tensor, embeds: dict):
 
 class EllaProxyUNet:
     def __init__(
-        self,
-        ella: ELLA,
-        model_sampling,
-        positive,
-        negative,
-        mode=APPLY_MODE_ELLA_ONLY,
-        **kwargs,
+            self,
+            ella: ELLA,
+            model_sampling,
+            positive,
+            negative,
+            mode=APPLY_MODE_ELLA_ONLY,
+            **kwargs,
     ) -> None:
         self.ella = ella
         self.model_sampling = model_sampling
@@ -143,14 +147,14 @@ class EllaAdvancedApply:
     CATEGORY = "ella/apply"
 
     def apply(
-        self,
-        model,
-        ella,
-        positive,
-        negative,
-        sigmas=None,
-        mode=APPLY_MODE_ELLA_AND_CLIP,
-        **kwargs,
+            self,
+            model,
+            ella,
+            positive,
+            negative,
+            sigmas=None,
+            mode=APPLY_MODE_ELLA_AND_CLIP,
+            **kwargs,
     ):
         model_clone = model.clone()
         model_sampling = model_clone.get_model_object("model_sampling")
@@ -266,7 +270,7 @@ class EllaTextEncode:
             },
             "optional": {
                 "clip": ("CLIP", {"default": None}),
-                "text_clip": ("STRING", {"default":"", "multiline": True, "dynamicPrompts": True}),
+                "text_clip": ("STRING", {"default": "", "multiline": True, "dynamicPrompts": True}),
             },
         }
 
@@ -307,11 +311,12 @@ class EllaTextEncode:
 
         for i in range(len(conditioning_to)):
             t1 = conditioning_to[i][0]
-            tw = torch.cat((t1, cond_from),1)
+            tw = torch.cat((t1, cond_from), 1)
             n = [tw, conditioning_to[i][1].copy()]
             out.append(n)
 
         return out
+
 
 """
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -325,7 +330,7 @@ class ELLALoader:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "name": (folder_paths.get_filename_list("ella"),),
+                "name": (get_filename_list_with_downloadable(FOLDER_NAME, KNOWN_ELLA_CHECKPOINTS),),
             },
         }
 
@@ -334,52 +339,23 @@ class ELLALoader:
     CATEGORY = "ella/loaders"
 
     def load(self, name: str, **kwargs):
-        ella_file = folder_paths.get_full_path("ella", name)
+        ella_file = get_or_download("ella", name, KNOWN_ELLA_CHECKPOINTS)
         if not ella_file:
             raise ValueError("ELLA ckpt not found")
         ella = ELLA(ella_file)
         return ({"model": ella, "file": ella_file},)
 
 
-class T5TextEncoderLoader:
-    @classmethod
-    def INPUT_TYPES(cls):
-        paths = []
-        for search_path in folder_paths.get_folder_paths("ella_encoder"):
-            if os.path.exists(search_path):
-                for root, _, files in os.walk(search_path, followlinks=True):
-                    if "config.json" in files:
-                        paths.append(os.path.relpath(root, start=search_path))
-        return {
-            "required": {
-                "name": (paths,),
-                "max_length": ("INT", {"default": 0, "min": 0, "max": 128, "step": 16}),
-                "dtype": (["auto", "FP32", "FP16"],),
-            }
-        }
-
+class T5TextEncoderLoader(TransformersLoader):
     RETURN_TYPES = ("T5_TEXT_ENCODER",)
     FUNCTION = "load"
     CATEGORY = "ella/loaders"
 
-    def load(self, name: str, max_length: int = 0, dtype="auto", **kwargs):
-        t5_file = folder_paths.get_full_path("ella_encoder", name)
-        # "flexible_token_length" trick: Set `max_length=None` eliminating any text token padding or truncation.
-        # Help improve the quality of generated images corresponding to short captions.
-        for search_path in folder_paths.get_folder_paths("ella_encoder"):
-            if os.path.exists(search_path):
-                path = os.path.join(search_path, name)
-                if os.path.exists(path):
-                    t5_file = path
-                    break
-        if dtype == "auto":
-            dtype = model_management.text_encoder_dtype(model_management.text_encoder_device())
-        elif dtype == "FP16":
-            dtype = torch.float16
-        else:
-            dtype = torch.float32
-        t5_encoder = T5TextEmbedder(t5_file, max_length=max_length or None, dtype=dtype)  # type: ignore
-        return ({"model": t5_encoder, "file": t5_file},)
+    def load(self, ckpt_name: str, subfolder: Optional[str] = None, *args, **kwargs):
+        t5_model, = super().execute(ckpt_name, subfolder, args, kwargs)
+
+        t5_encoder = T5TextEmbedder(t5_model, max_length=None)  # type: ignore
+        return ({"model": t5_encoder, "file": None},)
 
 
 """
@@ -486,7 +462,7 @@ class SetEllaTimesteps:
                 if denoise <= 0.0:
                     return (torch.FloatTensor([]),)
                 total_steps = int(steps / denoise)
-            sigmas = samplers.calculate_sigmas(model_sampling, scheduler, total_steps).cpu()[-(steps + 1) :]
+            sigmas = samplers.calculate_sigmas(model_sampling, scheduler, total_steps).cpu()[-(steps + 1):]
         timesteps = model_sampling.timestep(sigmas)
         return ({**ella, "timesteps": timesteps},)
 
