@@ -8,6 +8,7 @@ from torch import nn
 
 from comfy import model_management
 from comfy.language.transformers_model_management import TransformersManagedModel
+from comfy.model_management import load_models_gpu
 from comfy.model_patcher import ModelPatcher
 from .activations import get_activation
 from .utils import remove_weights
@@ -128,7 +129,7 @@ class T5TextEmbedder:
         self.patcher = transformers_model
 
     def load_model(self):
-        model_management.load_model_gpu(self.patcher)
+        load_models_gpu([self.patcher])
         return self.patcher
 
     def __call__(self, caption, text_input_ids=None, attention_mask=None, max_length=None, **kwargs):
@@ -323,11 +324,10 @@ class ELLA:
         self.patcher = ModelPatcher(self.model, load_device=self.load_device, offload_device=self.offload_device)
 
     def load_model(self):
-        model_management.load_model_gpu(self.patcher)
+        load_models_gpu([self.patcher])
         return self.patcher
 
     def __call__(self, timesteps: torch.Tensor, t5_embeds: torch.Tensor, **kwargs):
-        self.load_model()
         timesteps = timesteps.to(device=self.load_device, dtype=torch.int64)
         t5_embeds = t5_embeds.to(device=self.load_device, dtype=self.dtype)  # type: ignore
         cond = self.model(timesteps, t5_embeds, **kwargs)

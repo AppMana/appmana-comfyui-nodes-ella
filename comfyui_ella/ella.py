@@ -38,6 +38,7 @@ def ella_encode(ella: ELLA, timesteps: torch.Tensor, embeds: dict):
     num_steps = len(timesteps) - 1
     # print(f"creating ELLA conds for {num_steps} timesteps")
     conds = []
+    ella.load_model()
     for i, timestep in enumerate(timesteps[:-1]):
         # Calculate start and end percentages based on the position of sigma in the batch
         start = i / num_steps  # Start percentage is calculated based on the index
