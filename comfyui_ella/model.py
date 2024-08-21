@@ -314,10 +314,10 @@ class ELLAModel(nn.Module):
 
 class ELLA:
     def __init__(self, path: str, **kwargs) -> None:
-        self.load_device = model_management.text_encoder_device()
-        self.offload_device = model_management.text_encoder_offload_device()
-        self.dtype = model_management.text_encoder_dtype(self.load_device)
-        self.output_device = model_management.intermediate_device()
+        self.load_device = model_management.get_torch_device()
+        self.offload_device = model_management.unet_offload_device()
+        self.dtype = model_management.unet_dtype(self.load_device)
+        self.output_device = model_management.get_torch_device()
         self.model = ELLAModel()
         load_model(self.model, path, strict=True)
         self.model.to(self.dtype)  # type: ignore
